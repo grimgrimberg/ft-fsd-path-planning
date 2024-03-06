@@ -208,8 +208,8 @@ class CalculatePath:
         self, center_along_match_connection: FloatArray
     ) -> FloatArray:
         """
-        Fit the calculated basis path as a spline. If the computation fails, use the
-        path calculated in the previous step
+        Fit the  basis path as a spline. If the computation fails, use the
+        path calculated incalculated the previous step
         """
         try:
             path_update = self.spline_fitter_factory.fit(

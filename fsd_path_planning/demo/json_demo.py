@@ -1,8 +1,10 @@
 from __future__ import annotations
+import os
 
 import json
 from pathlib import Path
 from typing import Optional
+import pandas as pd
 
 import numpy as np
 
@@ -32,6 +34,77 @@ try:
 except TypeError:
     app = typer.Typer()
 
+def output2csv(out,results):
+    dfs=[]
+    # Example values - replace these with your actual data parameters
+    total_length_of_array = len(results)  # Total length of your data array
+    num_measurements_per_timestep = 40 # Number of measurements in each timestep
+
+# Calculate the total number of timesteps
+    # total_timesteps = (total_length_of_array - 1) // num_measurements_per_timestep
+    total_timesteps = (total_length_of_array)
+# Define your starting timestamp and frequency interval
+    start_time = '00:00:00'
+    freq = '1s'  # 'T' for minute. Use 'S' for second, 'H' for hour, etc., as needed
+
+# Generate the timestep data
+# Pandas date_range can create a range of datetime values at a specified frequency
+    # timesteps = pd.date_range(start=start_time, periods=total_timesteps, freq=freq)
+    # if not out :
+    #     return
+    # print(out[0])
+    # print("this is the full results",results[0:])
+    # print("this is results")
+    # print(results)
+    # print(results[0][:])
+    # print(type(results.))
+    # results_arr = np.array(results,dtype='object')
+    # print('this is the shape of results_arr ',np.shape.results_arr)
+    # print("this is results as array " , results_arr[:,0])
+    # print(a)
+    # print("this is out")
+    # print(out)
+    for index, element in enumerate(results):
+        df2 = pd.DataFrame(element[0],columns=['spline','x','y','kappa'])
+        # filename = f'measurement_{index}.csv'
+        dfs.append(df2)
+        combined_df = pd.concat(dfs, ignore_index=True)
+        # timestep_df = pd.date_range(start=start_time, periods=total_timesteps, freq=freq)
+        # Add a 'Timestamp' column to the DataFrame
+        # If the number of rows in 'df' doesn't match the length of 'timesteps', adjust accordingly
+        # df['Timestamp'] = pd.NaT  # Initialize column with 'Not a Time' (NaT)
+        # df.loc[:len(timesteps)-1, 'Timestamp'] = timesteps
+        # combined_df = combined_df[['Timestamp','spline','x','y','kappa']]
+
+    # Export the combined DataFrame to a CSV file
+    combined_df.to_csv('combined_measurements_output.csv', index=False,columns=['spline','x','y','kappa'])
+    
+    # Export the DataFrame to a CSV file without the index
+    # df2.to_csv(filename, index=False)
+    
+    df=pd.DataFrame(out[0],columns=['spline','x','y','kappa'])
+    # df2 = pd.DataFrame(results_arr[:,0],columns=['spline','x','y','kappa'])
+    csv_filename = 'trakoutput.csv'
+    csv_filename2 = 'fulltrackout.csv'
+    df.to_csv(csv_filename, index=False)
+    df2.to_csv(csv_filename2, index=False)
+
+
+    print("CSV file created using Method 2")
+    # file_name = 'out.csv'
+    #     # Attempt to get the directory of the current script
+    # #directory = os.path.dirname(os.path.abspath(__file__))
+    #     # Fallback to the current working directory if __file__ is not defined
+    # directory = os.getcwd()
+    
+    # # Construct the full file path
+    # full_path = os.path.join(directory, file_name)
+    
+    # # Use numpy.savetxt to write the array to a CSV file
+    # np.savetxt(full_path, out, delimiter=',', fmt='%s')
+    # print(f"File saved to: {full_path}")
+
+    
 
 def select_mission_by_filename(filename: str) -> MissionTypes:
     is_skidpad = "skidpad" in filename
@@ -175,9 +248,15 @@ planner, you should run the demo one more time after it is finished.
         anim.save(absolute_path_str, fps=data_rate)
 
     plt.show()
+    output2csv(out,results)
+    
 
 
 def numba_cache_files_exist() -> bool:
+    """
+    Check if any '.nbc' files exist in the package directory.
+    Returns True if files exist, False otherwise.
+    """
     package_file = Path(__file__).parent.parent
     try:
         next(package_file.glob("**/*.nbc"))
@@ -191,6 +270,17 @@ def load_data_json(
     data_path: Path,
     remove_color_info: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
+    """
+    Load data from a JSON file and return the positions, directions, and cone observations.
+
+    Args:
+        data_path (Path): The path to the JSON data file.
+        remove_color_info (bool, optional): Whether to remove color information. Defaults to False.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]: A tuple containing the positions (np.ndarray), 
+        directions (np.ndarray), and cone observations (list[list[np.ndarray]]).
+    """
     # extract data
     data = json.loads(data_path.read_text())[:]
 
@@ -216,3 +306,4 @@ def load_data_json(
 
 if __name__ == "__main__":
     app()
+
