@@ -133,6 +133,9 @@ def main(
     show_runtime_histogram: bool = False,
     output_path: Optional[Path] = typer.Option(None, "--output-path", "-o"),
 ) -> None:
+    """
+    A function to generate a main animation based on given parameters and data. The function takes in various parameters such as data_path, data_rate, remove_color_info, show_runtime_histogram, and output_path. It then performs several operations such as loading data, warming up the JIT compiler, running the planner, calculating paths, and generating an animation. The function also saves the animation to the specified output path.
+    """
     data_path = get_filename(data_path)
 
     mission = select_mission_by_filename(data_path.name)

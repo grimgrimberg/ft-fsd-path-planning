@@ -1,10 +1,12 @@
 from __future__ import annotations
 import casadi as ca
 #this is a try to mix both up#
-
+from fsd_path_planning.demo.json_demo import app
 from typing import Any, List, Optional, Union
-
+import json
+import os
 import numpy as np
+from pathlib import Path
 
 from fsd_path_planning.calculate_path.core_calculate_path import PathCalculationInput
 from fsd_path_planning.cone_matching.core_cone_matching import ConeMatchingInput
@@ -22,12 +24,15 @@ from fsd_path_planning.utils.math_utils import (
     angle_from_2d_vector,
     unit_2d_vector_from_angle,
 )
-from fsd_path_planning.calculate_path.core_calculate_path import do_all_mpc_parameter_calculations
+from fsd_path_planning.calculate_path.core_calculate_path import CalculatePath
+#from fsd_path_planning.calculate_path.core_calculate_path import CalculatePath.do_all_mpc_parameter_calculations ,CalculatePath.create_path_for_mpc_from_path_update
 from fsd_path_planning.utils.mission_types import MissionTypes
 from fsd_path_planning.utils.utils import Timer
+
 # MPC Setup
 N = 40  # Prediction horizon
 dt = 0.05  # Time step
+#do_all_mpc_parameter_calculations()
 
 # Define the parameters
 m = ca.SX.sym('m')  # mass of the vehicle
@@ -114,8 +119,69 @@ x_dot = ca.vertcat(
     T_dot
 )
 
+Next_X = ca.vertcat(state_vector + x_dot * dt) #next state is this state + state derivatives * dt.
+print ("this is the next state",Next_X)
+
 # Print out the state derivatives (for demonstration purposes; remove in actual use)
 print("State Derivatives:", x_dot)
 # Display the initial conditions and initial inputs (for demonstration purposes; remove in actual use)
 print("Initial State Vector:", initial_conditions)
 print("Initial Inputs:", initial_inputs)
+
+def load_data_json(
+    data_path: Path,
+    remove_color_info: bool = False,
+) -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
+    """
+    Load data from a JSON file and return the positions, directions, and cone observations.
+
+    Args:
+        data_path (Path): The path to the JSON data file.
+        remove_color_info (bool, optional): Whether to remove color information. Defaults to False.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]: A tuple containing the positions (np.ndarray), 
+        directions (np.ndarray), and cone observations (list[list[np.ndarray]]).
+    """
+    # extract data
+    data_path = get_filename()
+    data = json.loads(data_path.read_text())[:]
+
+    positions = np.array([d["car_position"] for d in data])
+    directions = np.array([d["car_direction"] for d in data])
+    cone_observations = [
+        [np.array(c).reshape(-1, 2) for c in d["slam_cones"]] for d in data
+    ]
+
+    if remove_color_info:
+        cones_observations_all_unknown = []
+        for cones in cone_observations:
+            new_observation = [np.zeros((0, 2)) for _ in ConeTypes]
+            new_observation[ConeTypes.UNKNOWN] = np.row_stack(
+                [c.reshape(-1, 2) for c in cones]
+            )
+            cones_observations_all_unknown.append(new_observation)
+
+        cone_observations = cones_observations_all_unknown.copy()
+
+    return positions, directions, cone_observations
+
+def get_filename(data_path: Path | None) -> Path:
+    """
+    Function to get the filename from the given data path.
+
+    :param data_path: The path to the file. If None, a default file path is used.
+    :type data_path: Path | None
+    :return: The path to the file.
+    :rtype: Path
+    """
+    if data_path is None:
+        data_path = Path(__file__).parent / "fsg_19_2_laps.json"
+
+    return data_path
+
+if __name__ == "__main__":
+    #data_path = []
+    data_path = get_filename(None)
+    positions, directions, cone_observations = load_data_json(data_path,bool=False)
+
