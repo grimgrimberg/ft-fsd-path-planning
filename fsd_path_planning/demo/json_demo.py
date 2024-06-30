@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 
 import json
@@ -91,6 +92,7 @@ def output2csv(out,results):
 
 
     print("CSV file created using Method 2")
+    return
     # file_name = 'out.csv'
     #     # Attempt to get the directory of the current script
     # #directory = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +107,10 @@ def output2csv(out,results):
     # print(f"File saved to: {full_path}")
 
     
+def cone2csv(out,cones):
+    
+
+    return
 
 def select_mission_by_filename(filename: str) -> MissionTypes:
     is_skidpad = "skidpad" in filename
@@ -198,6 +204,11 @@ planner, you should run the demo one more time after it is finished.
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_aspect("equal")
+    # allcones = []
+    # yellow_cones_sorted_xy=[]
+    # yellow_cones_sorted_x = []
+    # yellow_cones_sorted_y = []
+    # blue_cones_sorted_xy = []
     # plot animation
     frames = []
     for i in tqdm(range(len(results)), desc="Generating animation"):
@@ -216,6 +227,12 @@ planner, you should run the demo one more time after it is finished.
         (direction,) = plt.plot(
             *np.array([positions[i], positions[i] + directions[i]]).T, "g-"
         )
+        # # yellow_cones_sorted_x[i] = (yellow_cones_sorted.get_xdata())
+        # yellow_cones_xy = list.append(*results[i][2].T)
+        # # print(yellow_cones_xy)
+        # yellow_cones_sorted_y[i] = (yellow_cones_sorted.get_ydata())
+        # yellow_cones_sorted_xy = np.append(yellow_cones_sorted_x[i],yellow_cones_sorted_y[i])
+        # # blue_cones_sorted_xy = blue_cones_sorted_xy.append(yellow_cones_sorted.get_xdata(),yellow_cones_sorted.get_ydata())
         title = plt.text(
             0.5,
             1.01,
@@ -251,7 +268,26 @@ planner, you should run the demo one more time after it is finished.
         anim.save(absolute_path_str, fps=data_rate)
 
     plt.show()
-    output2csv(out,results)
+    # print(yellow_cones_xy)
+    # print(yellow_cones_sorted_xy.shape)
+    # yellow_x_data = line2d.get_xdata(yellow_cones_sorted)
+
+    # print(planner.sortedcones)
+    # print(cone_observations[i])
+    # dfs = []
+    # # print(left_cones)
+    # csv_filename2 = 'cones.csv'
+    # df2 = pd.DataFrame(cone_observations[1])
+    # df2.to_csv(csv_filename2, index=False)
+
+    #     # filename = f'measurement_{index}.csv'
+    # dfs.append(df2)
+    # # for i in range(len(cone_observations)):
+    # #     combined_df = pd.concat(cone_observations[i], ignore_index=True)
+    # # df2.to_csv(csv_filename2, index=False)
+    # print("this is the blues sorted")
+    # print(blue_cones_sorted)
+    # output2csv(out,results)
     
 
 

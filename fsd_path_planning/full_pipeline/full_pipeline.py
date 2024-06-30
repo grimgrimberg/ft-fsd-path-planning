@@ -46,6 +46,7 @@ class PathPlanner:
         self.pathing = create_default_pathing(mission)
         self.global_path: Optional[FloatArray] = None
 
+
     def _convert_direction_to_array(self, direction: Any) -> FloatArray:
         direction = np.squeeze(np.array(direction))
         if direction.shape == (2,):

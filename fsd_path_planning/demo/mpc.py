@@ -137,12 +137,14 @@ import matplotlib.pyplot as plt
 N = 10  # Prediction horizon
 dt = 0.1  # Time step
 L = 2.9  # Wheelbase
-
+m = 100 #mass of the car
 #importing stuff two array#
 
 
-# Initial state [x, y, psi, vx, vy]
-initial_state = np.array([0, 0, 0, 10, 0])  # Starting with some initial forward velocity
+# Initial state [x, y, phi, vx, vy,r(yaw rate),Delta(searing angle),T (throtale)]
+initial_state = np.array([0, 0, 0, 0, 0,0])  # Starting with some initial forward velocity
+u_0 = np.array([0,1]).T #col vector of 0,1 that we insert on the first step a full press on the throtale. its delta stering angle and delta reaction
+
 
 
 # Reference trajectory (straight line for simplicity)
@@ -153,8 +155,8 @@ vx_ref = 10 * np.ones(N)  # Constant velocity
 vy_ref = np.zeros(N)  # No lateral velocity
 
 # Define CasADi variables
-X = ca.MX.sym('X', 5, N+1)  # State variables: [x, y, psi, vx, vy]
-U = ca.MX.sym('U', 2, N)   # Control inputs: [delta, ax]
+X = ca.MX.sym('X', 8, N+1)  # State variables: [x, y, psi, vx, vy]
+U = ca.MX.sym('U', 2, N)   # Control inputs: [delta, accl_reaction]
 
 # Objective function and constraints
 obj = 0  # Objective function
@@ -164,9 +166,20 @@ g.append(X[:,0] - initial_state)
 # Dynamics model
 for i in range(N):
     # Extract states for readability
-    x, y, psi, vx, vy = X[0,i], X[1,i], X[2,i], X[3,i], X[4,i]
+    x, y, phi, vx, vy, r,delta,driver_react = X[0,i], X[1,i], X[2,i], X[3,i], X[4,i],X[5,i],X[6,i],X[7,i]
     delta, ax = U[0,i], U[1,i]
-    
+    #state vector aka X_dot
+    x_dot[i] = X[2,i]*np.cos(X[2,i])-X[3,i]*np.sin(X[2,i])
+    y_dot[i] = X[2,i]*np.sin(X[2,i])+X[3,i]*np.cos(X[2,i])
+    phi_dot[i] = r
+    a_x[i] = (F_X-F_Fy*np.sin(X[6,i])+m*X[4,i]*r)*1/m
+    a_y[i] = (F_Ry+F_Fy.np.cos(X[6,i])-m*X[3,i]*r)*1/m
+    r_dot[i] = (F_Fy*lf*np.cos(X[6,i])-F_Ry*lr + Tau_vec)*1/Iz
+    Delta_dot[i] = U[0,i]
+    T_dot = U[1,i]
+
+
+
     # Update equations based on a simplified bicycle model
     x_next = x + vx * ca.cos(psi) * dt
     y_next = y + vx * ca.sin(psi) * dt

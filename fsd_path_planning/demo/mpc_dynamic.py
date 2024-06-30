@@ -50,6 +50,11 @@ I_z = 1700 #(this is a guess)  # moment of inertia about the vertical axis
 l_f = 0.835  # distance from the center of mass to the front axle
 l_r = 0.705  # distance from the center of mass to the rear axle
 #L TOTAL = LF+LR = 1.54.
+#constraints for steering
+Max_Delta = 0.418879 # 0.418879 radians = 24 degrees
+Min_Delta = -Max_Delta
+Max_T = 1 # 1 max Torque (full gas)
+Min_T = -Max_T
 
 # Define the state vector components
 X = ca.SX.sym('X')
@@ -107,12 +112,36 @@ T_dot = ca.SX.sym('T_dot')  # rate of change of driver command
 # Set the initial input values
 initial_inputs = ca.DM([0, 1])  # 0 for steering angle change, 1 for driver command
 
+#constraints 
+# Define maximum and minimum limits for the steering angle and throttle
+max_delta = 0.418879  # 24 degrees in radians
+min_delta = -max_delta
+max_T = 1  # Maximum throttle
+min_T = -1  # Minimum throttle (or braking force)
+
+# Assuming `U` is your control input vector where U[0] is delta (steering angle) and U[1] is T (throttle)
+constraints = []
+U = ca.SX.sym('U', 2)  # Control input vector
+constraints.append(U[0] - max_delta)  # Steering angle should not exceed max_delta
+constraints.append(min_delta - U[0])  # Steering angle should be above min_delta
+constraints.append(U[1] - max_T)  # Throttle should not exceed max_T
+constraints.append(min_T - U[1])  # Throttle should be above min_T
+
+max_v = 100  # Maximum velocity, e.g., 360 km/h in m/s
+min_v = 0  # Minimum velocity
+
+# Assuming `v_x` is the longitudinal velocity of the vehicle
+v_x = ca.SX.sym('v_x')
+constraints.append(v_x - max_v)  # Velocity should not exceed max_v
+constraints.append(min_v - v_x)  # Velocity should be above min_v
+
+
 # The nominal model equations
 x_dot = ca.vertcat(
     v_x * ca.cos(psi) - v_y * ca.sin(psi),
     v_x * ca.sin(psi) + v_y * ca.cos(psi),
     r,
-    (1/m) * (F_rx - F_ry * ca.sin(delta) + m * v_y * r),
+    (1/m) * (F_rx - F_ry * ca.sin(delta) + m * v_y * r),#A_X
     (1/m) * (F_ry + F_rx * ca.cos(delta) - m * v_x * r),
     (1/I_z) * (F_ry * l_f * ca.cos(delta) - F_rx * l_r + T * r * v_x),
     delta_dot,
