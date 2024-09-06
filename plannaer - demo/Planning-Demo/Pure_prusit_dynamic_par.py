@@ -1,50 +1,27 @@
-"""
-
-Path tracking simulation with pure pursuit steering and PID speed control.
-
-"""
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 import csv
 import pandas as pd
 
-
+# Vehicle parameters
 m = 250  # mass of the vehicle (not final)
-I_z = 1700 #(this is a guess)  # moment of inertia about the vertical axis
+I_z = 1700  # moment of inertia about the vertical axis
 l_f = 0.835  # distance from the center of mass to the front axle
 l_r = 0.705  # distance from the center of mass to the rear axle
+WB = 1.54  # [m] wheel base of vehicle
 
 # Parameters
 k = 0.5  # look forward gain
-Lfc = 4  # [m] look-ahead distance
+Lfc = 5  # [m] look-ahead distance
 Kp = 0.2  # speed proportional gain
 dt = 0.5  # [s] time tick
-WB = 1.54  # [m] wheel base of vehicle
 
-# Vehicle parameters
-LENGTH = 4.5  # [m]
-WIDTH = 2.0  # [m]
-BACKTOWHEEL = 1.0  # [m]
-WHEEL_LEN = 0.3  # [m]
-WHEEL_WIDTH = 0.2  # [m]
-TREAD = 0.7  # [m]
-WB2 = 2.5  # [m]
-
+# Display parameters
 show_animation = True
 
 class State:
-
     def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0):
-        """
-        Initialize the state of the vehicle.
-
-        Args:
-            x: Initial x position.
-            y: Initial y position.
-            yaw: Initial yaw angle (orientation).
-            v: Initial velocity.
-        """
         self.x = x
         self.y = y
         self.yaw = yaw
@@ -53,13 +30,6 @@ class State:
         self.rear_y = self.y - ((l_f) * math.sin(self.yaw))
 
     def update(self, a, delta):
-        """
-        Update the state of the vehicle based on control inputs.
-
-        Args:
-            a: Acceleration.
-            delta: Steering angle.
-        """
         self.x += self.v * math.cos(self.yaw) * dt
         self.y += self.v * math.sin(self.yaw) * dt
         self.yaw += self.v / WB * math.tan(delta) * dt
@@ -68,26 +38,12 @@ class State:
         self.rear_y = self.y - ((l_f) * math.sin(self.yaw))
 
     def calc_distance(self, point_x, point_y):
-        """
-        Calculate the distance between the rear of the vehicle and a point.
-
-        Args:
-            point_x: x coordinate of the point.
-            point_y: y coordinate of the point.
-
-        Returns:
-            Distance between the vehicle's rear and the point.
-        """
         dx = self.rear_x - point_x
         dy = self.rear_y - point_y
         return math.hypot(dx, dy)
 
 class States:
-
     def __init__(self):
-        """
-        Initialize a container to store vehicle states over time.
-        """
         self.x = []
         self.y = []
         self.yaw = []
@@ -95,13 +51,6 @@ class States:
         self.t = []
 
     def append(self, t, state):
-        """
-        Append a state to the container.
-
-        Args:
-            t: Time.
-            state: State object representing the vehicle state.
-        """
         self.x.append(state.x)
         self.y.append(state.y)
         self.yaw.append(state.yaw)
@@ -109,46 +58,31 @@ class States:
         self.t.append(t)
 
 def proportional_control(target, current):
-    """
-    Calculate acceleration based on proportional control.
+    return Kp * (target - current)
 
-    Args:
-        target: Target speed.
-        current: Current speed.
+def calculate_curvature(cx, cy, target_ind):
+    if target_ind > 0 and target_ind < len(cx) - 1:
+        dx1 = cx[target_ind + 1] - cx[target_ind]
+        dy1 = cy[target_ind + 1] - cy[target_ind]
+        dx2 = cx[target_ind] - cx[target_ind - 1]
+        dy2 = cy[target_ind] - cy[target_ind - 1]
 
-    Returns:
-        Acceleration.
-    """
-    a = Kp * (target - current)
-    return a
-
+        angle1 = math.atan2(dy1, dx1)
+        angle2 = math.atan2(dy2, dx2)
+        
+        curvature = abs(angle2 - angle1)
+    else:
+        curvature = 0  # Assume straight line at the ends of the path
+    
+    return curvature
 class TargetCourse:
-
     def __init__(self, cx, cy):
-        """
-        Initialize the target course.
-
-        Args:
-            cx: x coordinates of the course.
-            cy: y coordinates of the course.
-        """
         self.cx = cx
         self.cy = cy
         self.old_nearest_point_index = None
 
     def search_target_index(self, state):
-        """
-        Search for the target index on the course.
-
-        Args:
-            state: State object representing the vehicle state.
-
-        Returns:
-            Target index and look-ahead distance.
-        """
-        # To speed up nearest point search, doing it at only first time.
         if self.old_nearest_point_index is None:
-            # search nearest point index
             dx = [state.rear_x - icx for icx in self.cx]
             dy = [state.rear_y - icy for icy in self.cy]
             d = np.hypot(dx, dy)
@@ -165,79 +99,42 @@ class TargetCourse:
                 distance_this_index = distance_next_index
             self.old_nearest_point_index = ind
 
-        Lf = k * state.v + Lfc  # update look ahead distance
+        curvature = calculate_curvature(self.cx, self.cy, ind)  # Call the standalone function
+        Lf = calculate_dynamic_lookahead(state, curvature)
 
-        # search look ahead target point index
         while Lf > state.calc_distance(self.cx[ind], self.cy[ind]):
             if (ind + 1) >= len(self.cx):
-                break  # not exceed goal
+                break
             ind += 1
 
         return ind, Lf
 
 def pure_pursuit_steer_control(state, trajectory, pind):
-    """
-    Calculate steering angle using pure pursuit algorithm.
-
-    Args:
-        state: State object representing the vehicle state.
-        trajectory: Target trajectory.
-        pind: Previous target index.
-
-    Returns:
-        Steering angle and updated target index.
-    """
     ind, Lf = trajectory.search_target_index(state)
-
     if pind >= ind:
         ind = pind
-
     if ind < len(trajectory.cx):
         tx = trajectory.cx[ind]
         ty = trajectory.cy[ind]
-    else:  # toward goal
+    else:
         tx = trajectory.cx[-1]
         ty = trajectory.cy[-1]
         ind = len(trajectory.cx) - 1
 
     alpha = math.atan2(ty - state.rear_y, tx - state.rear_x) - state.yaw
-
     delta = math.atan2(2.0 * WB * math.sin(alpha) / Lf, 1.0)
 
     return delta, ind
 
-def plot_arrow(x, y, yaw, length=1.0, width=2.0, fc="r", ec="k"):
-    """
-    Plot an arrow to represent orientation.
-
-    Args:
-        x: x coordinate of the arrow.
-        y: y coordinate of the arrow.
-        yaw: Orientation angle.
-        length: Length of the arrow.
-        width: Width of the arrow.
-        fc: Face color of the arrow.
-        ec: Edge color of the arrow.
-    """
-    if not isinstance(x, float):
-        for ix, iy, iyaw in zip(x, y, yaw):
-            plot_arrow(ix, iy, iyaw)
-    else:
-        plt.arrow(x, y, length * math.cos(yaw), length * math.sin(yaw),
-                  fc=fc, ec=ec, head_width=width, head_length=width)
-        plt.plot(x, y)
-
 def plot_car(x, y, yaw, steer=0.0, truckcolor="-k"):
-    """
-    Plot the vehicle.
+    LENGTH = 4.5  # [m]
+    WIDTH = 2.0  # [m]
+    BACKTOWHEEL = 1.0  # [m]
+    WHEEL_LEN = 0.3  # [m]
+    WHEEL_WIDTH = 0.2  # [m]
+    TREAD = 0.7  # [m]
+    WB2 = 2.5  # [m]
 
-    Args:
-        x: x coordinate of the vehicle.
-        y: y coordinate of the vehicle.
-        yaw: Orientation angle of the vehicle.
-        steer: Steering angle of the vehicle.
-        truckcolor: Color of the vehicle.
-    """
     outline = np.array([[-BACKTOWHEEL, (LENGTH - BACKTOWHEEL), (LENGTH - BACKTOWHEEL), -BACKTOWHEEL, -BACKTOWHEEL],
                         [WIDTH / 2, WIDTH / 2, - WIDTH / 2, -WIDTH / 2, WIDTH / 2]])
 
@@ -291,15 +188,6 @@ def plot_car(x, y, yaw, steer=0.0, truckcolor="-k"):
              np.array(rl_wheel[1, :]).flatten(), truckcolor)
 
 def read_csv_points(filename):
-    """
-    Read x, y points from a CSV file.
-
-    Args:
-        filename: Name of the CSV file.
-
-    Returns:
-        Lists of x, y points.
-    """
     x = []
     y = []
     with open(filename, 'r') as file:
@@ -310,36 +198,7 @@ def read_csv_points(filename):
             y.append(float(row[1]))
     return x, y
 
-def read_csv_points2(filename):
-    """
-    Read x, y points from a CSV file.
-
-    Args:
-        filename: Name of the CSV file.
-
-    Returns:
-        Lists of x, y points.
-    """
-    x = []
-    y = []
-    with open(filename, 'r') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip the header line
-        for row in reader:
-            x.append(float(row[2]))
-            y.append(float(row[3]))
-    return x, y
 def load_and_concatenate_data(yellow_file, blue_file):
-    """
-    Load and concatenate data from multiple CSV files.
-
-    Args:
-        yellow_file: File containing yellow cone positions.
-        blue_file: File containing blue cone positions.
-
-    Returns:
-        Concatenated DataFrame containing cone positions.
-    """
     yellow_cone_df = pd.read_csv(yellow_file)
     blue_cone_df = pd.read_csv(blue_file)
 
@@ -351,11 +210,34 @@ def load_and_concatenate_data(yellow_file, blue_file):
 
     return concatenated_df
 
+
+
+def dynamic_alpha(state, curvature, a_y_max=9.81):
+    lateral_accel = (state.v ** 2) * curvature
+    base_alpha = 10.0
+
+    if lateral_accel > a_y_max:
+        alpha = base_alpha * 2
+    else:
+        alpha = base_alpha * (lateral_accel / a_y_max)
+
+    return alpha
+
+def dynamic_speed_control(cx, cy, state, target_ind, v_max, a_y_max=9.81):
+    curvature = calculate_curvature(cx, cy, target_ind)
+    alpha = dynamic_alpha(state, curvature, a_y_max)
+    v_target = max(v_max - alpha * curvature, 5.0 / 3.6)  # Ensure minimum speed
+    ai = Kp * (v_target - state.v)
+    return ai, v_target
+
+def calculate_dynamic_lookahead(state, curvature, base_Lf=4.0):
+    # Increase look-ahead distance with speed, but decrease it with tighter curves
+    speed_factor = k * state.v
+    curvature_factor = 1.0 / (1.0 + curvature * 10)  # The 10 here is an arbitrary scaling factor
+    Lf = base_Lf + speed_factor * curvature_factor
+    return Lf
+
 def main():
-    # Read points from CSV file
-    #csv_filename = 'Map_data/midpoints.csv'
-    csv_filename2 = 'All_Points_with_Spline_Parameter_0.csv'
-    # cx2,xy2 = read_csv_points2(csv_filename2)
     csv_filename = 'centerline_track.csv'
     cx, cy = read_csv_points(csv_filename)
 
@@ -363,13 +245,10 @@ def main():
     blue_file = 'blue_cones_track.csv'
     cones = load_and_concatenate_data(yellow_file, blue_file)
 
-    target_speed = 15.0 / 3.6  # [m/s] Target speed
-    T = 200000.0  # max simulation time
+    v_max = 17.0 / 3.6  # [m/s] Max speed
+    T = 200.0  # max simulation time
 
-    # initial state
-    #state = State(x=0, y=0, yaw=0.5*math.pi, v=0.0) #yaw is in radian, 1.57 = 0.5*pi
-    state = State(x=60.786,y=0 ,yaw = 0.168*math.pi , v=0.0) #for custom track
-    #state = State(x=8.393362528595, y=44.80212676430125, yaw=0.0, v=0.0) prev data
+    state = State(x=60.786, y=0, yaw=0.168*math.pi, v=0.0)
 
     lastIndex = len(cx) - 1
     time = 0.0
@@ -379,13 +258,8 @@ def main():
     target_ind, _ = target_course.search_target_index(state)
 
     while T >= time and lastIndex > target_ind:
-        #if lastIndex >= target_ind:
-        #        lastIndex = 0
-        # Calculate control input
-        ai = proportional_control(target_speed, state.v)
+        ai, v_target = dynamic_speed_control(cx, cy, state, target_ind, v_max)
         di, target_ind = pure_pursuit_steer_control(state, target_course, target_ind)
-
-        # Update state
         state.update(ai, di)
         time += dt
         states.append(time, state)
@@ -403,11 +277,6 @@ def main():
             plt.axis("equal")
             plt.title("Speed[km/h]:" + str(state.v * 3.6)[:4])
             plt.pause(0.001)
-            
-
-
-    # Test
-    # assert lastIndex >= target_ind, "Cannot goal"
 
     if show_animation:
         plt.cla()
@@ -429,4 +298,3 @@ def main():
 if __name__ == '__main__':
     print("Pure pursuit path tracking simulation start")
     main()
-
