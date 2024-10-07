@@ -12,6 +12,7 @@ import numpy as np
 from fsd_path_planning import ConeTypes, MissionTypes, PathPlanner
 from fsd_path_planning.utils.utils import Timer
 
+
 try:
     import matplotlib.animation
     import matplotlib.pyplot as plt

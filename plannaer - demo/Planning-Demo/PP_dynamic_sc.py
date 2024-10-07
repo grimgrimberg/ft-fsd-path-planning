@@ -1,403 +1,350 @@
+from __future__ import annotations
 import numpy as np
-import math
 import matplotlib.pyplot as plt
-import csv
+import os
+import json
+from pathlib import Path
+from typing import Optional
 import pandas as pd
+from fsd_path_planning import ConeTypes, MissionTypes, PathPlanner
+from fsd_path_planning.utils.utils import Timer
+from fsd_path_planning.demo.json_demo import load_data_json,get_filename,select_mission_by_filename,PathPlanner
+
+
+try:
+    import matplotlib.animation
+    import matplotlib.pyplot as plt
+    import typer
+except ImportError:
+    print(
+        "\n\nThis demo requires matplotlib and typer to be installed. You can install"
+        " them with by using the [demo] extra.\n\n"
+    )
+    raise
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("You can get a progress bar by installing tqdm: pip install tqdm")
+    tqdm = lambda x, total=None: x
+
+
+try:
+    app = typer.Typer(pretty_exceptions_enable=False)
+except TypeError:
+    app = typer.Typer()
 
 # Vehicle parameters
-m = 250  # mass of the vehicle [kg]
-I_z = 1700  # moment of inertia about the vertical axis [kg.m^2]
-l_f = 0.835  # distance from the center of mass to the front axle [m]
-l_r = 0.705  # distance from the center of mass to the rear axle [m]
-C_f = 1600.0  # cornering stiffness front [N/rad]
-C_r = 1700.0  # cornering stiffness rear [N/rad]
-WB = l_f + l_r  # Wheelbase of the vehicle [m]
+vehicle_params = {
+    'mass': 250.0,            # Mass of the vehicle in kg
+    'I_z': 120.0,             # Yaw moment of inertia in kg*m^2 (estimate)
+    'wheelbase': 1.5,         # Distance between front and rear axles in meters
+    'lf': 0.75,               # Distance from CG to front axle
+    'lr': 0.75,               # Distance from CG to rear axle
+    'max_steering_angle': np.radians(30),  # Maximum steering angle in radians
+    'max_acceleration': 5.0,  # Maximum acceleration in m/s^2
+    'max_deceleration': -5.0, # Maximum deceleration in m/s^2
+    # Pacejka tire model coefficients (example values)
+    'B': 10.0,
+    'C': 1.9,
+    'D': 0.7 * 250 * 9.81 / 2,  # Peak force per tire (70% of half vehicle weight)
+    'E': 0.97
+}
 
-# Parameters
-k = 0.8  # look forward gain
-Lfc = 4  # [m] look-ahead distance
-Kp = 0.2  # speed proportional gain
-dt = 0.1  # [s] time tick
-max_speed = 17 / 3.6  # [m/s] max speed (~15 km/h)
+data_path: Optional[Path] = typer.Option(None, "--data-path", "-i"),
+data_rate: float = 10,
+remove_color_info: bool = False,
+show_runtime_histogram: bool = False,
+output_path: Optional[Path] = typer.Option(None, "--output-path", "-o"),
+"""
+    A function to generate a main animation based on given parameters and data. The function takes in various parameters such as data_path, data_rate, remove_color_info, show_runtime_histogram, and output_path. It then performs several operations such as loading data, warming up the JIT compiler, running the planner, calculating paths, and generating an animation. The function also saves the animation to the specified output path.
+    """
+#data_path = get_filename(data_path)
+data_path = Path('C:/Users/yuval/ft-fsd-path-planning/plannaer - demo/Planning-Demo/fsg_19_2_laps.json')
 
-# Display parameters
-show_animation = True
+#mission = select_mission_by_filename(data_path.name)
 
-class State:
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, v_x=0, v_y=0.0, r=0.0):
-        self.x = x
-        self.y = y
-        self.yaw = yaw
-        self.v_x = v_x  # Longitudinal velocity
-        self.v_y = v_y  # Lateral velocity
-        self.r = r  # Yaw rate
-        self.max_power = 80000  # Peak power of 80 kW
+planner = PathPlanner(MissionTypes.trackdrive)
 
-    def update(self, throttle, delta):
-        # Calculate the power supplied by the motors based on throttle input (0 to 1)
-        # Cap the power at the peak value (80 kW)
-        power_available = throttle * self.max_power
-
-        # Prevent division by zero
-        if self.v_x == 0.0:
-            self.v_x = 1e-3
-
-        # Convert power to force (P = F * v_x => F = P / v_x)
-        F_x = power_available / self.v_x
-        a_x = F_x / m  # Longitudinal acceleration
-
-        # Dynamic Bicycle Model for Lateral Forces
-        F_yf = 2 * C_f * (delta - (self.v_y + l_f * self.r) / self.v_x)
-        F_yr = 2 * C_r * (- (self.v_y - l_r * self.r) / self.v_x)
-
-        # Calculate the lateral acceleration
-        a_y = (F_yf + F_yr) / m
-
-        # Update velocities
-        self.v_x += a_x * dt  # Update longitudinal velocity
-        self.v_y += a_y * dt - self.v_x * self.r * dt  # Update lateral velocity
-
-        # Update yaw rate
-        self.r += (l_f * F_yf - l_r * F_yr) / I_z * dt  # Update yaw based on lateral forces
-
-        # Update position in global coordinates
-        self.x += (self.v_x * np.cos(self.yaw) - self.v_y * np.sin(self.yaw)) * dt
-        self.y += (self.v_x * np.sin(self.yaw) + self.v_y * np.cos(self.yaw)) * dt
-        self.yaw += self.r * dt  # Update yaw based on yaw rate
-
-        # Cap the speed to avoid runaway acceleration
-        if self.v_x > max_speed:
-            self.v_x = max_speed
-
-    def calc_distance(self, point_x, point_y):
-        dx = self.x - point_x
-        dy = self.y - point_y
-        return math.hypot(dx, dy)
-
-class States:
-    def __init__(self):
-        self.x = []
-        self.y = []
-        self.yaw = []
-        self.v_x = []
-        self.v_y = []
-        self.t = []
-
-    def append(self, t, state):
-        self.x.append(state.x)
-        self.y.append(state.y)
-        self.yaw.append(state.yaw)
-        self.v_x.append(state.v_x)
-        self.v_y.append(state.v_y)
-        self.t.append(t)
-
-def proportional_control(target, current):
-    return Kp * (target - current)
-
-class TargetCourse:
-    def __init__(self, cx, cy):
-        self.cx = cx
-        self.cy = cy
-        self.old_nearest_point_index = None
-
-    def search_target_index(self, state):
-        if self.old_nearest_point_index is None:
-            dx = [state.x - icx for icx in self.cx]
-            dy = [state.y - icy for icy in self.cy]
-            d = np.hypot(dx, dy)
-            ind = np.argmin(d)
-            self.old_nearest_point_index = ind
-        else:
-            ind = self.old_nearest_point_index
-            distance_this_index = state.calc_distance(self.cx[ind], self.cy[ind])
-            while True:
-                distance_next_index = state.calc_distance(self.cx[ind + 1], self.cy[ind + 1])
-                if distance_this_index < distance_next_index:
-                    break
-                ind = ind + 1 if (ind + 1) < len(self.cx) else ind
-                distance_this_index = distance_next_index
-            self.old_nearest_point_index = ind
-
-        Lf = k * state.v_x + Lfc  # update look-ahead distance
-
-        while Lf > state.calc_distance(self.cx[ind], self.cy[ind]):
-            if (ind + 1) >= len(self.cx):
-                break
-            ind += 1
-
-        return ind, Lf
-
-def pure_pursuit_steer_control(state, trajectory, pind):
-    ind, Lf = trajectory.search_target_index(state)
-    if pind >= ind:
-        ind = pind
-    if ind < len(trajectory.cx):
-        tx = trajectory.cx[ind]
-        ty = trajectory.cy[ind]
-    else:
-        tx = trajectory.cx[-1]
-        ty = trajectory.cy[-1]
-        ind = len(trajectory.cx) - 1
-
-    alpha = math.atan2(ty - state.y, tx - state.x) - state.yaw
-    delta = math.atan2(2.0 * WB * math.sin(alpha) / Lf, 1.0)
-
-    # Limit the steering angle to avoid excessive turns
-    max_delta = np.radians(30)  # Limit steering to 30 degrees
-    delta = np.clip(delta, -max_delta, max_delta)
-
-    return delta, ind
+positions, directions, cone_observations = load_data_json(
+        data_path, remove_color_info=remove_color_info
+    )
 
 
-def plot_car(x, y, yaw, steer=0.0, truckcolor="-k"):
-    LENGTH = 4.5  # [m]
-    WIDTH = 2.0  # [m]
-    BACKTOWHEEL = 1.0  # [m]
-    WHEEL_LEN = 0.3  # [m]
-    WHEEL_WIDTH = 0.2  # [m]
-    TREAD = 0.7  # [m]
-    WB2 = 2.5  # [m]
+    # run planner once to "warm up" the JIT compiler / load all cached jit functions
+try:
+        planner.calculate_path_in_global_frame(
+            cone_observations[0], positions[0], directions[0]
+        )
+except Exception:
+        print("Error during warmup")
+        raise
 
-    outline = np.array([[-BACKTOWHEEL, (LENGTH - BACKTOWHEEL), (LENGTH - BACKTOWHEEL), -BACKTOWHEEL, -BACKTOWHEEL],
-                        [WIDTH / 2, WIDTH / 2, - WIDTH / 2, -WIDTH / 2, WIDTH / 2]])
+results = []
+timer = Timer(noprint=True)
 
-    fr_wheel = np.array([[WHEEL_LEN, -WHEEL_LEN, -WHEEL_LEN, WHEEL_LEN, WHEEL_LEN],
-                         [-WHEEL_WIDTH - TREAD, -WHEEL_WIDTH - TREAD, WHEEL_WIDTH - TREAD, WHEEL_WIDTH - TREAD, -WHEEL_WIDTH - TREAD]])
+for i, (position, direction, cones) in tqdm(
+    enumerate(zip(positions, directions, cone_observations)),
+    total=len(positions),
+    desc="Calculating paths",
+    ):
+        try:
+            with timer:
+                out = planner.calculate_path_in_global_frame(
+                    cones,
+                    position,
+                    direction,
+                    return_intermediate_results=True,
+                )
+        except KeyboardInterrupt:
+            print(f"Interrupted by user on frame {i}")
+            break
+        except Exception:
+            print(f"Error at frame {i}")
+            raise
+        results.append(out)
 
-    rr_wheel = np.copy(fr_wheel)
+# Import your planner and load data (assuming these functions are defined)
+# from fsd_path_planning import PathPlanner, MissionTypes, ConeTypes
+# path_planner = PathPlanner(MissionTypes.trackdrive)
+# global_cones, car_position, car_direction = load_data()
+# path = path_planner.calculate_path_in_global_frame(global_cones, car_position, car_direction)
 
-    fl_wheel = np.copy(fr_wheel)
-    fl_wheel[1, :] *= -1
-    rl_wheel = np.copy(rr_wheel)
-    rl_wheel[1, :] *= -1
+# For the sake of this example, let's create a sample path
+# Replace this with your actual path from the planner
+num_points = 1000
+t = np.linspace(0, 50, num_points)
+#path = np.zeros((num_points, 4))
+#path[:, 0] = t  # Spline parameter
+#path[:, 1] = t  # x-coordinate (straight line for simplicity)
+#path[:, 2] = np.sin(t / 5) * 10  # y-coordinate (wavy path)
+#path[:, 3] = np.gradient(np.arctan2(np.gradient(path[:,2]), np.gradient(path[:,1])), t)  # Curvature
 
-    Rot1 = np.array([[math.cos(yaw), math.sin(yaw)],
-                     [-math.sin(yaw), math.cos(yaw)]])
-    Rot2 = np.array([[math.cos(steer), math.sin(steer)],
-                     [-math.sin(steer), math.cos(steer)]])
+# Initial vehicle state
+state = np.array([
+    position[0], 
+    position[1], 
+    np.arctan2(direction[1], direction[0]), 
+    0.1,   # v_x: Small initial speed to avoid division by zero
+    0.0,   # v_y
+    0.0    # omega
+])
 
-    fr_wheel = (fr_wheel.T.dot(Rot2)).T
-    fl_wheel = (fl_wheel.T.dot(Rot2)).T
-    fr_wheel[0, :] += WB2
-    fl_wheel[0, :] += WB2
 
-    fr_wheel = (fr_wheel.T.dot(Rot1)).T
-    fl_wheel = (fl_wheel.T.dot(Rot1)).T
+# Pacejka tire model function
+def pacejka_tire_model(alpha, params):
+    B, C, D, E = params['B'], params['C'], params['D'], params['E']
+    F = D * np.sin(C * np.arctan(B * alpha - E * (B * alpha - np.arctan(B * alpha))))
+    return F
 
-    outline = (outline.T.dot(Rot1)).T
-    rr_wheel = (rr_wheel.T.dot(Rot1)).T
-    rl_wheel = (rl_wheel.T.dot(Rot1)).T
-
-    outline[0, :] += x
-    outline[1, :] += y
-    fr_wheel[0, :] += x
-    fr_wheel[1, :] += y
-    rr_wheel[0, :] += x
-    rr_wheel[1, :] += y
-    fl_wheel[0, :] += x
-    fl_wheel[1, :] += y
-    rl_wheel[0, :] += x
-    rl_wheel[1, :] += y
-
-    plt.plot(np.array(outline[0, :]).flatten(),
-             np.array(outline[1, :]).flatten(), truckcolor)
-    plt.plot(np.array(fr_wheel[0, :]).flatten(),
-             np.array(fr_wheel[1, :]).flatten(), truckcolor)
-    plt.plot(np.array(rr_wheel[0, :]).flatten(),
-             np.array(rr_wheel[1, :]).flatten(), truckcolor)
-    plt.plot(np.array(fl_wheel[0, :]).flatten(),
-             np.array(fl_wheel[1, :]).flatten(), truckcolor)
-    plt.plot(np.array(rl_wheel[0, :]).flatten(),
-             np.array(rl_wheel[1, :]).flatten(), truckcolor)
-
-def read_csv_points(filename):
-    x = []
-    y = []
-    with open(filename, 'r') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip the header line
-        for row in reader:
-            x.append(float(row[0]))
-            y.append(float(row[1]))
-    return x, y
-
-def load_and_concatenate_data(yellow_file, blue_file):
-    yellow_cone_df = pd.read_csv(yellow_file)
-    blue_cone_df = pd.read_csv(blue_file)
-
-    concatenated_df = pd.concat([
-        pd.concat([yellow_cone_df.iloc[i:i+1].assign(color='Y'),
-                   blue_cone_df.iloc[i:i+1].assign(color='B')])
-        for i in range(min(len(yellow_cone_df), len(blue_cone_df)))
-    ], ignore_index=True)
-
-    return concatenated_df
-
-def calculate_curvature(cx, cy, target_ind):
-    if target_ind > 0 and target_ind < len(cx) - 1:
-        dx1 = cx[target_ind + 1] - cx[target_ind]
-        dy1 = cy[target_ind + 1] - cy[target_ind]
-        dx2 = cx[target_ind] - cx[target_ind - 1]
-        dy2 = cy[target_ind] - cy[target_ind - 1]
-
-        angle1 = math.atan2(dy1, dx1)
-        angle2 = math.atan2(dy2, dx2)
-        
-        curvature = abs(angle2 - angle1)
-    else:
-        curvature = 0  # Assume straight line at the ends of the path
+# Dynamic bicycle model function
+def dynamic_bicycle_model(state, steering_angle, acceleration_command, vehicle_params, dt):
+    x, y, psi, v_x, v_y, omega = state
+    m = vehicle_params['mass']
+    I_z = vehicle_params['I_z']
+    lf = vehicle_params['lf']
+    lr = vehicle_params['lr']
     
-    return curvature
+    # Avoid division by zero
+    if v_x < 0.1:
+        v_x = 0.1
 
-def calculate_dynamic_lookahead(state, curvature, base_Lf=4.0):
-    # Adjust look-ahead distance based on speed and curvature
-    speed_factor = k * state.v_x
-    curvature_factor = 1.0 / (1.0 + curvature * 5)  # Adjusted scaling factor for curvature
-    Lf = base_Lf + speed_factor * curvature_factor
-    return Lf
+    # Compute slip angles
+    alpha_f = steering_angle - np.arctan2(v_y + lf * omega, v_x)
+    alpha_r = -np.arctan2(v_y - lr * omega, v_x)
+    
+    # Tire forces
+    F_yf = 2 * pacejka_tire_model(alpha_f, vehicle_params)  # Front lateral force
+    F_yr = 2 * pacejka_tire_model(alpha_r, vehicle_params)  # Rear lateral force
 
+    # Longitudinal forces (assuming rear-wheel drive)
+    F_xf = 0.0  # No longitudinal force at the front wheels
+    F_xr = m * acceleration_command  # Rear longitudinal force
+    
+    # Equations of motion
+    v_x_dot = (F_xf * np.cos(steering_angle) - F_yf * np.sin(steering_angle) + F_xr) / m + v_y * omega
+    v_y_dot = (F_xf * np.sin(steering_angle) + F_yf * np.cos(steering_angle) + F_yr) / m - v_x * omega
+    omega_dot = (lf * (F_yf * np.cos(steering_angle) + F_xf * np.sin(steering_angle)) - lr * F_yr) / I_z
+    
+    # Update velocities
+    v_x += v_x_dot * dt
+    v_y += v_y_dot * dt
+    omega += omega_dot * dt
+    
+    # Update positions
+    x += (v_x * np.cos(psi) - v_y * np.sin(psi)) * dt
+    y += (v_x * np.sin(psi) + v_y * np.cos(psi)) * dt
+    psi += omega * dt
+    
+    # Return updated state
+    return np.array([x, y, psi, v_x, v_y, omega])
 
-def dynamic_speed_control(cx, cy, state, target_ind, v_max, a_y_max=9.81):
-    curvature = calculate_curvature(cx, cy, target_ind)
-    # More conservative speed calculation
-    v_target = min(v_max, math.sqrt(a_y_max / (curvature + 0.1))) if curvature > 0 else v_max
-    ai = Kp * (v_target - state.v_x)
-    return ai, v_target
+# Helper functions for the pure pursuit controller
+def find_closest_point(x, y, out):
+    distances = np.sqrt((out[:, 1] - x)**2 + (out[:, 2] - y)**2)
+    closest_idx = np.argmin(distances)
+    return closest_idx
 
+def find_lookahead_point(closest_idx, path, lookahead_distance, x, y):
+    accumulated_distance = 0.0
+    for i in range(closest_idx, len(path) - 1):
+        dx = path[i + 1, 1] - path[i, 1]
+        dy = path[i + 1, 2] - path[i, 2]
+        segment_length = np.sqrt(dx**2 + dy**2)
+        accumulated_distance += segment_length
+        if accumulated_distance >= lookahead_distance:
+            return path[i + 1, 1:3], i + 1  # Return (x, y) of lookahead point and its index
+    return path[-1, 1:3], len(path) - 1
 
-class TargetCourse:
-    def __init__(self, cx, cy):
-        self.cx = cx
-        self.cy = cy
-        self.old_nearest_point_index = None
+# Pure pursuit control function
+def pure_pursuit_control(state, path, lookahead_distance, vehicle_params):
+    x, y, psi = state[0], state[1], state[2]
+    wheelbase = vehicle_params['wheelbase']
 
-    def search_target_index(self, state):
-        if self.old_nearest_point_index is None:
-            dx = [state.x - icx for icx in self.cx]
-            dy = [state.y - icy for icy in self.cy]
-            d = np.hypot(dx, dy)
-            ind = np.argmin(d)
-            self.old_nearest_point_index = ind
+    # Find the closest point on the path
+    closest_idx = find_closest_point(x, y, path)
+
+    # Find the lookahead point
+    lookahead_point, lookahead_idx = find_lookahead_point(closest_idx, path, lookahead_distance, x, y)
+
+    # Transform lookahead point to vehicle coordinates
+    dx = lookahead_point[0] - x
+    dy = lookahead_point[1] - y
+
+    # Rotate to vehicle coordinate frame
+    local_x = np.cos(-psi) * dx - np.sin(-psi) * dy
+    local_y = np.sin(-psi) * dx + np.cos(-psi) * dy
+
+    # Calculate the steering angle
+    if local_x == 0:
+        curvature = 0.0
+    else:
+        curvature = (2 * local_y) / (local_x**2 + local_y**2)
+    steering_angle = np.arctan(curvature * wheelbase)
+
+    # Clamp the steering angle to the vehicle's limits
+    max_steering = vehicle_params['max_steering_angle']
+    steering_angle = np.clip(steering_angle, -max_steering, max_steering)
+
+    return steering_angle, lookahead_idx
+
+# Compute desired speeds from path curvature
+def compute_desired_speed(path, max_speed, min_speed, scaling_factor):
+    #curvatures = np.abs(path[:, 3])  # Get the curvature column
+    curvatures = out[0][3]
+    desired_speeds = np.zeros(len(curvatures))
+    for i, curvature in enumerate(curvatures):
+        if curvature == 0:
+            desired_speeds[i] = max_speed
         else:
-            ind = self.old_nearest_point_index
-            distance_this_index = state.calc_distance(self.cx[ind], self.cy[ind])
-            while True:
-                distance_next_index = state.calc_distance(self.cx[ind + 1], self.cy[ind + 1])
-                if distance_this_index < distance_next_index:
-                    break
-                ind = ind + 1 if (ind + 1) < len(self.cx) else ind
-                distance_this_index = distance_next_index
-            self.old_nearest_point_index = ind
+            desired_speed = np.sqrt(scaling_factor / curvature)
+            desired_speeds[i] = np.clip(desired_speed, min_speed, max_speed)
+    return desired_speeds
 
-        curvature = calculate_curvature(self.cx, self.cy, ind)  # Call the standalone function
-        Lf = calculate_dynamic_lookahead(state, curvature)
+# PID controller class
+class PIDController:
+    def __init__(self, Kp, Ki, Kd, dt, output_limits=(None, None)):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+        self.dt = dt
+        self.integral = 0.0
+        self.prev_error = 0.0
+        self.min_output, self.max_output = output_limits
 
-        while Lf > state.calc_distance(self.cx[ind], self.cy[ind]):
-            if (ind + 1) >= len(self.cx):
-                break
-            ind += 1
+    def compute(self, setpoint, measurement):
+        error = setpoint - measurement
+        self.integral += error * self.dt
+        derivative = (error - self.prev_error) / self.dt
 
-        return ind, Lf
+        output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
 
-def calculate_cost(state, cx, cy, target_ind, track_width=3.0):
-    lane_deviation = state.calc_distance(cx[target_ind], cy[target_ind])
-    lane_cost = lane_deviation ** 2
+        # Clamp the output to output limits
+        if self.max_output is not None:
+            output = min(self.max_output, output)
+        if self.min_output is not None:
+            output = max(self.min_output, output)
 
-    target_speed = 15.0 / 3.6
-    speed_cost = (state.v_x - target_speed) ** 2
+        self.prev_error = error
+        return output
 
-    left_edge = np.array([cx[target_ind] - track_width / 2, cy[target_ind]])
-    right_edge = np.array([cx[target_ind] + track_width / 2, cy[target_ind]])
-    dist_to_left_edge = state.calc_distance(left_edge[0], left_edge[1])
-    dist_to_right_edge = state.calc_distance(right_edge[0], right_edge[1])
-    safety_cost = max(0, track_width / 2 - min(dist_to_left_edge, dist_to_right_edge)) ** 2
+# Simulation parameters
+dt = 0.01                # Time step in seconds
+simulation_time = 50.0   # Total simulation time in seconds
+time_steps = int(simulation_time / dt)
 
-    # Adjusted weights to balance objectives
-    total_cost = 1.0 * lane_cost + 0.05 * speed_cost + 5.0 * safety_cost
-    return total_cost
+# Generate desired speeds from path curvature
+max_speed = 20.0  # Maximum speed in m/s
+min_speed = 5.0   # Minimum speed in m/s
+scaling_factor = 2.0  # Tuning parameter for speed adjustment
+desired_speeds = compute_desired_speed(out, max_speed, min_speed, scaling_factor)
 
-def optimize_control(state, target_course, cx, cy, v_max, previous_steering=0):
-    best_cost = float('inf')
-    best_throttle = 0.0
-    best_steering = 0.0
-    steering_damping = 0.9  # Damping factor for steering input
+# Initialize controllers
+lookahead_distance = 5.0  # meters
+Kp = 1.0
+Ki = 0.1
+Kd = 0.01
+pid_controller = PIDController(Kp, Ki, Kd, dt, output_limits=(vehicle_params['max_deceleration'], vehicle_params['max_acceleration']))
 
-    for throttle in np.linspace(0, 1, 10):
-        for delta in np.linspace(-np.radians(30), np.radians(30), 10):
-            temp_state = State(state.x, state.y, state.yaw, state.v_x, state.v_y, state.r)
-            temp_state.update(throttle, delta)
-            target_ind, _ = target_course.search_target_index(temp_state)
+# Data storage for plotting and analysis
+x_history = []
+y_history = []
+yaw_history = []
+velocity_history = []
+steering_history = []
+acceleration_history = []
+time_history = []
 
-            cost = calculate_cost(temp_state, cx, cy, target_ind)
-            if cost < best_cost:
-                best_cost = cost
-                best_throttle = throttle
-                best_steering = delta
+# Simulation loop
+for step in range(time_steps):
+    current_time = step * dt
 
-    # Apply damping to the steering input
-    best_steering = steering_damping * previous_steering + (1 - steering_damping) * best_steering
-    return best_throttle, best_steering
+    # Get control inputs
+    steering_angle, lookahead_idx = pure_pursuit_control(state, out, lookahead_distance, vehicle_params)
+    desired_speed = desired_speeds[lookahead_idx]
+    current_speed = state[3]  # v_x
+    acceleration_command = pid_controller.compute(desired_speed, current_speed)
 
-def main():
-    csv_filename = 'centerline_track.csv'
-    cx, cy = read_csv_points(csv_filename)
+    # Clamp acceleration command to vehicle limits
+    acceleration_command = np.clip(acceleration_command, vehicle_params['max_deceleration'], vehicle_params['max_acceleration'])
 
-    yellow_file = 'yellow_cones_track.csv'
-    blue_file = 'blue_cones_track.csv'
-    cones = load_and_concatenate_data(yellow_file, blue_file)
+    # Update vehicle state
+    state = dynamic_bicycle_model(state, steering_angle, acceleration_command, vehicle_params, dt)
 
-    v_max = 17 / 3.6  # [m/s] Max speed
-    T = 200.0  # max simulation time
+    # Store data
+    x_history.append(state[0])
+    y_history.append(state[1])
+    yaw_history.append(state[2])
+    velocity_history.append(state[3])
+    steering_history.append(steering_angle)
+    acceleration_history.append(acceleration_command)
+    time_history.append(current_time)
 
-    state = State(x=60.786, y=0, yaw=0.168*math.pi, v_x=1.0, v_y=0.0, r=0.0)
+    # Check for end of path
+    if lookahead_idx >= len(out) - 1:
+        print("Reached the end of the path.")
+        break
 
-    lastIndex = len(cx) - 1
-    time = 0.0
-    states = States()
-    states.append(time, state)
-    target_course = TargetCourse(cx, cy)
-    target_ind, _ = target_course.search_target_index(state)
+# Plotting the path and vehicle trajectory
+plt.figure(figsize=(10, 6))
+plt.plot(out[:, 1], out[:, 2], 'r--', label='Reference Path')
+plt.plot(x_history, y_history, 'b-', label='Vehicle Trajectory')
+plt.xlabel('X Position (m)')
+plt.ylabel('Y Position (m)')
+plt.title('Vehicle Path Tracking')
+plt.legend()
+plt.axis('equal')
+plt.grid(True)
+plt.show()
 
-    previous_steering = 0.0
-
-    while T >= time and lastIndex > target_ind:
-        throttle, steering = optimize_control(state, target_course, cx, cy, v_max, previous_steering)
-        state.update(throttle, steering)
-        previous_steering = steering  # Store the previous steering for damping
-        time += dt
-        states.append(time, state)
-        
-        if show_animation:
-            plt.cla()
-            plt.gcf().canvas.mpl_connect(
-                'key_release_event',
-                lambda event: [exit(0) if event.key == 'escape' else None])
-            plt.plot(cx, cy, "tab:red", label="course")
-            plt.plot(states.x, states.y, "-k", label="trajectory")
-            plt.plot(cx[target_ind], cy[target_ind], "xg", label="target")
-            plt.scatter(cones['X'], cones['Y'], c=cones['color'].map({'Y': 'gold', 'B': 'tab:blue'}), s=5)
-            plot_car(state.x, state.y, state.yaw, steer=steering)
-            plt.axis("equal")
-            plt.title("Speed[km/h]:" + str(state.v_x * 3.6)[:4])
-            plt.pause(0.001)
-
-    if show_animation:
-        plt.cla()
-        plt.plot(cx, cy, ".r", label="course")
-        plt.plot(states.x, states.y, "-b", label="trajectory")
-        plt.legend()
-        plt.xlabel("x[m]")
-        plt.ylabel("y[m]")
-        plt.axis("equal")
-        plt.grid(True)
-
-        plt.subplots(1)
-        plt.plot(states.t, [iv * 3.6 for iv in states.v_x], "-r")
-        plt.xlabel("Time[s]")
-        plt.ylabel("Speed[km/h]")
-        plt.grid(True)
-        plt.show()
-
-if __name__ == '__main__':
-    print("Pure pursuit path tracking simulation with dynamic bicycle model start")
-    main()
+# Plotting speed profile and vehicle speed
+plt.figure(figsize=(10, 6))
+plt.plot(time_history, velocity_history, 'b-', label='Vehicle Speed')
+desired_speed_history = [desired_speeds[find_closest_point(x, y, out)] for x, y in zip(x_history, y_history)]
+plt.plot(time_history, desired_speed_history, 'r--', label='Desired Speed')
+plt.xlabel('Time (s)')
+plt.ylabel('Speed (m/s)')
+plt.title('Speed Profile')
+plt.legend()
+plt.grid(True)
+plt.show()
